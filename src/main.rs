@@ -273,8 +273,8 @@ fn unpack(image: &std::path::Path, out: Option<&std::path::Path>) -> Result<()> 
         pack.total_size
     );
     println!(
-        "{:<20} {:<10} {:<12} {:>12} {:>12}  {:<8} crc",
-        "name", "type", "product", "offset", "size", "slotted"
+        "{:<20} {:<10} {:<12} {:>12} {:>12}  {:<8} {:<9} {:<5} flags",
+        "name", "type", "product", "offset", "size", "slotted", "crc", "tag"
     );
     for e in &pack.entries {
         let crc = if e.kind == fbpk::ENTRY_PARTITION_TABLE {
@@ -284,15 +284,24 @@ fn unpack(image: &std::path::Path, out: Option<&std::path::Path>) -> Result<()> 
         } else {
             "MISMATCH".to_string()
         };
+        let (tag, flags) = match stages::header_info(pack.entry_data(e)) {
+            Some(info) if e.kind != fbpk::ENTRY_PARTITION_TABLE => (
+                stages::header_tag(pack.entry_data(e)).unwrap_or_else(|| "-".into()),
+                format!("{:#x}", info.flags),
+            ),
+            _ => ("-".into(), "-".into()),
+        };
         println!(
-            "{:<20} {:<10} {:<12} {:>12} {:>12}  {:<8} {}",
+            "{:<20} {:<10} {:<12} {:>12} {:>12}  {:<8} {:<9} {:<5} {}",
             e.name,
             e.kind_name(),
             e.product,
             e.offset,
             e.size,
             if e.slotted { "yes" } else { "no" },
-            crc
+            crc,
+            tag,
+            flags
         );
     }
     if let Some(dir) = out {
@@ -415,11 +424,11 @@ fn boot(args: BootArgs) -> Result<()> {
             "bl1 header: magic {:#010x}, body {} bytes, flags {:#010x}",
             info.magic, info.body_len, info.flags
         );
-        if info.flags & 0xff != 0x01 {
+        if info.flags & 0x1 == 0 {
             println!(
-                "  note: the low byte of the flags word is not 0x01. On Pixel 6 the ROM only \
-                 accepts a BL1 signed with that \"USB bootable\" bit set, and retail factory \
-                 images are not; if the ROM answers \"bl1 header fail\", that is why."
+                "  note: bit 0 of the flags word (\"USB bootable\") is clear. The ROM only \
+                 accepts a BL1 signed with it set; retail factory images are not, and the \
+                 known-good recovery packs carry 0x211 here. Expect \"bl1 header fail\"."
             );
         }
     }

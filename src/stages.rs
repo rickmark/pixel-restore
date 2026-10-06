@@ -84,14 +84,14 @@ pub fn resolve(stage: &str, generation: Generation) -> Option<(&'static str, Par
     })
 }
 
-/// Alternative partition names to try when the first choice is absent from
-/// the pack. Factory images carry the GSA (security chip) first stage as
-/// `gsa_bl1` and its firmware as `gsa`; tensor-usbdl's loose packs call the
-/// same two files `gsa.img` and `gsaf.img`.
+/// Alternative partition names to try, in order. Factory images carry the
+/// GSA (security chip) first stage as `gsa_bl1` and its firmware as `gsa`;
+/// tensor-usbdl's loose packs have `gsa.img` (sent for GSA1) and `gsaf.img`
+/// (sent for GSAF), and the order below reproduces that for both layouts.
 fn aliases(partition: &str) -> &'static [&'static str] {
     match partition {
         "gsa_bl1" => &["gsa_bl1", "gsa1", "gsa"],
-        "gsa" => &["gsa", "gsaf"],
+        "gsa" => &["gsaf", "gsa"],
         "pbl" => &["pbl", "epbl"],
         _ => &[],
     }
@@ -105,6 +105,37 @@ pub struct HeaderInfo {
     pub magic: u32,
     pub body_len: u32,
     pub flags: u32,
+}
+
+/// The ASCII tag in the header's magic word, which names the ROM request
+/// the image answers: `EPBL`, `BL2`, `GSA1`, `GSAF`, `ABL`, `TZSW`, `LDFW`,
+/// `BL31`, `GCF`; BL1 carries `APBL`. Images are matched on this first, so
+/// a file's name does not have to be right.
+pub fn header_tag(image: &[u8]) -> Option<String> {
+    let info = header_info(image)?;
+    let raw = info.magic.to_le_bytes();
+    let end = raw.iter().position(|&b| b == 0).unwrap_or(4);
+    let tag: String = raw[..end].iter().map(|&b| b as char).collect();
+    if tag.is_empty() || !tag.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    Some(tag.to_ascii_uppercase())
+}
+
+/// Header tag the ROM request `stage` is served from (a body request wants
+/// the body of the image whose header carries the base tag).
+fn tag_for(stage: &str) -> &str {
+    match stage {
+        "BL1" => "APBL",
+        "EPBB" => "EPBL",
+        "BL2B" => "BL2",
+        "ABLB" => "ABL",
+        "TZSB" => "TZSW",
+        "LDFB" => "LDFW",
+        "BL3B" => "BL31",
+        "GCFB" => "GCF",
+        other => other,
+    }
 }
 
 pub fn header_info(image: &[u8]) -> Option<HeaderInfo> {
@@ -134,16 +165,48 @@ impl Sources {
         self.partition_bytes(partition)
     }
 
-    fn partition_bytes(&self, partition: &str) -> Option<&[u8]> {
-        if let Some(bytes) = self.files.get(partition) {
-            return Some(bytes);
+    /// Every image we hold, with where it came from.
+    fn all_images(&self) -> Vec<(String, &[u8])> {
+        let mut out: Vec<(String, &[u8])> = self
+            .files
+            .iter()
+            .map(|(n, b)| (format!("{n}.img"), b.as_slice()))
+            .collect();
+        if let Some(pack) = &self.pack {
+            out.extend(
+                pack.data_entries()
+                    .map(|e| (e.name.clone(), pack.entry_data(e))),
+            );
         }
-        let pack = self.pack.as_ref()?;
+        out
+    }
+
+    /// The one image whose header magic names `tag`, if exactly one does.
+    fn by_tag(&self, tag: &str) -> Option<(String, &[u8])> {
+        let mut hits = self
+            .all_images()
+            .into_iter()
+            .filter(|(_, b)| header_tag(b).as_deref() == Some(tag));
+        let first = hits.next()?;
+        if hits.next().is_some() {
+            return None; // ambiguous; let the name lookup decide
+        }
+        Some(first)
+    }
+
+    fn partition_bytes(&self, partition: &str) -> Option<&[u8]> {
         let names: Vec<&str> = if aliases(partition).is_empty() {
             vec![partition]
         } else {
             aliases(partition).to_vec()
         };
+        // Loose files win over the pack, with the same alias order, so a
+        // tensor-usbdl style directory (gsa.img + gsaf.img) is served the way
+        // that tool serves it.
+        if let Some(bytes) = names.iter().find_map(|n| self.files.get(*n)) {
+            return Some(bytes);
+        }
+        let pack = self.pack.as_ref()?;
         names
             .iter()
             .find_map(|n| pack.find(n))
@@ -168,19 +231,27 @@ impl Sources {
             })?,
         };
 
-        let bytes = match self.partition_bytes(partition) {
-            Some(b) => b,
-            None if partition == "dpm" => {
-                // tensor-usbdl sends 4 KiB of zeros when no DPM image exists
-                // and Pixel 7/8 ROMs accept it, so do the same.
-                return Ok((vec![0u8; HEADER_LEN], "zeroed 4096-byte DPM".into()));
-            }
-            None => {
-                return Err(anyhow!(
-                    "no '{partition}' image available for request '{stage}' \
-                     (not in bootloader.img and no --stage {partition}=<file> given)"
-                ))
-            }
+        let tagged = if self.remap.contains_key(stage) {
+            None
+        } else {
+            self.by_tag(tag_for(stage))
+        };
+        let (source_name, bytes) = match tagged {
+            Some((name, b)) => (format!("{name}, header tag {}", tag_for(stage)), b),
+            None => match self.partition_bytes(partition) {
+                Some(b) => (partition.to_string(), b),
+                None if partition == "dpm" => {
+                    // tensor-usbdl sends 4 KiB of zeros when no DPM image exists
+                    // and Pixel 7/8 ROMs accept it, so do the same.
+                    return Ok((vec![0u8; HEADER_LEN], "zeroed 4096-byte DPM".into()));
+                }
+                None => {
+                    return Err(anyhow!(
+                        "no '{partition}' image available for request '{stage}' \
+                         (not in bootloader.img and no --stage {partition}=<file> given)"
+                    ))
+                }
+            },
         };
 
         let desc_part = match part {
@@ -199,7 +270,7 @@ impl Sources {
         };
         Ok((
             slice.to_vec(),
-            format!("{partition} ({desc_part}, {} bytes)", slice.len()),
+            format!("{source_name} ({desc_part}, {} bytes)", slice.len()),
         ))
     }
 }
@@ -288,6 +359,61 @@ mod tests {
             s.payload_for("BL1", Generation::Split).unwrap().0,
             vec![5u8; 3]
         );
+    }
+
+    #[test]
+    fn loose_pack_uses_tensor_usbdl_names() {
+        let mut s = Sources {
+            pack: None,
+            files: HashMap::new(),
+            remap: HashMap::new(),
+        };
+        s.files.insert("gsa".into(), vec![1u8; 10]);
+        s.files.insert("gsaf".into(), vec![2u8; 20]);
+        assert_eq!(
+            s.payload_for("GSA1", Generation::Split).unwrap().0,
+            vec![1u8; 10]
+        );
+        assert_eq!(
+            s.payload_for("GSAF", Generation::Split).unwrap().0,
+            vec![2u8; 20]
+        );
+        assert!(s.payload_for("ABL", Generation::Split).is_err());
+    }
+
+    fn tagged(tag: &[u8; 4], fill: u8, body: usize) -> Vec<u8> {
+        let mut img = vec![fill; HEADER_LEN + body];
+        img[0x400..0x404].copy_from_slice(tag);
+        img[0x40c..0x410].copy_from_slice(&(body as u32).to_le_bytes());
+        img[0x410..0x414].copy_from_slice(&0x211u32.to_le_bytes());
+        img
+    }
+
+    #[test]
+    fn header_tags_beat_file_names() {
+        // tensor-usbdl's husky pack: gsa.img carries the GSAF image and
+        // gsaf.img the GSA1 image, so names alone would send them swapped.
+        let mut s = Sources {
+            pack: None,
+            files: HashMap::new(),
+            remap: HashMap::new(),
+        };
+        s.files.insert("gsa".into(), tagged(b"GSAF", 1, 100));
+        s.files.insert("gsaf".into(), tagged(b"GSA1", 2, 50));
+        s.files.insert("bl1".into(), tagged(b"APBL", 3, 10));
+        s.files.insert("tzsw".into(), tagged(b"TZSW", 4, 7));
+        let (gsa1, desc) = s.payload_for("GSA1", Generation::Split).unwrap();
+        assert_eq!(gsa1.len(), HEADER_LEN + 50);
+        assert_eq!(gsa1[0], 2);
+        assert!(desc.contains("gsaf.img"), "{desc}");
+        assert_eq!(s.payload_for("GSAF", Generation::Split).unwrap().0[0], 1);
+        assert_eq!(s.payload_for("BL1", Generation::Split).unwrap().0[0], 3);
+        assert_eq!(
+            s.payload_for("TZSB", Generation::Split).unwrap().0,
+            vec![4u8; 7]
+        );
+        assert_eq!(header_tag(&tagged(b"BL2\0", 0, 1)).as_deref(), Some("BL2"));
+        assert_eq!(header_tag(&[0xffu8; HEADER_LEN]), None);
     }
 
     #[test]
