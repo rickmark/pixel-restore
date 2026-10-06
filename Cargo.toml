@@ -1,0 +1,25 @@
+[package]
+name = "pixel-restore"
+version = "0.1.0"
+edition = "2021"
+description = "Boot a Tensor Pixel out of 'Pixel ROM Recovery' (Exynos USB Boot) mode into fastboot"
+license = "MIT"
+
+[[bin]]
+name = "pixel-restore"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+crc32fast = "1"
+serialport = { version = "4", default-features = false }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[features]
+# Linux only: enumerate via libudev instead of sysfs (needs libudev-dev).
+libudev = ["serialport/libudev"]
+
+[profile.release]
+lto = true
+strip = true
