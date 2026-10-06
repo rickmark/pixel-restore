@@ -149,9 +149,20 @@ impl LineReader {
 
     /// Pop the next complete line, without its terminator. `None` means no
     /// full line is buffered yet.
+    ///
+    /// The one exception to "complete line" is the clear-to-send `C`, which
+    /// the ROM sends bare, with no terminator, and then waits only about a
+    /// second for the upload to start. A buffer holding exactly `C` is
+    /// therefore handed out at once.
     pub fn next_line(&mut self) -> Option<Vec<u8>> {
         loop {
-            let pos = self.buf.iter().position(|&b| b == b'\n' || b == b'\r')?;
+            let Some(pos) = self.buf.iter().position(|&b| b == b'\n' || b == b'\r') else {
+                if self.buf == b"C" {
+                    self.buf.clear();
+                    return Some(b"C".to_vec());
+                }
+                return None;
+            };
             let line: Vec<u8> = self.buf.drain(..=pos).collect();
             let line = &line[..line.len() - 1];
             if !line.is_empty() {
@@ -238,5 +249,19 @@ mod tests {
         assert_eq!(r.next_line(), None);
         r.push(b"partial");
         assert_eq!(r.pending(), b"partial");
+    }
+
+    #[test]
+    fn bare_clear_to_send_is_delivered_without_newline() {
+        let mut r = LineReader::default();
+        r.push(b"eub:req:dev:BL1\r\n");
+        assert_eq!(r.next_line().as_deref(), Some(&b"eub:req:dev:BL1"[..]));
+        r.push(b"C");
+        assert_eq!(r.next_line().as_deref(), Some(&b"C"[..]));
+        assert_eq!(r.next_line(), None);
+        assert!(r.pending().is_empty());
+        // Anything else without a terminator still waits for one.
+        r.push(b"Cx");
+        assert_eq!(r.next_line(), None);
     }
 }

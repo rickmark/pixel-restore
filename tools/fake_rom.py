@@ -133,7 +133,7 @@ def main():
             continue
         say(f"eub:req:{args.serial}:{stage}")
         time.sleep(0.05)
-        say("C")
+        os.write(master, b"C")  # bare, no terminator, like the real ROM
         hdr = read_exact(master, 8)
         if hdr[:4] != b"\x1bDNW":
             print(f"[rom] bad opcode {hdr[:4]!r} for {stage}", file=sys.stderr)
