@@ -33,10 +33,23 @@ udev ignore rule for `18d1:4f00`. Build with `--features libudev` if you have
 
 ## Use
 
-1. Download the **newest factory image for the exact model** from
-   <https://developers.google.com/android/images>. "bl1 header fail" or a
-   NAK from the ROM almost always means the wrong model's image, or one older
-   than the anti-rollback level the phone already has.
+1. Get the **newest factory image for the exact model**. Either download it
+   from <https://developers.google.com/android/images>, or let the tool do it:
+
+   ```sh
+   pixel-restore fetch komodo            # newest Pixel 9 Pro XL bootloader-*.img, a few MB
+   pixel-restore fetch komodo --full     # the whole 4 GB factory ZIP, SHA-256 checked, resumable
+   pixel-restore fetch komodo --list     # every build Google lists for the device
+   pixel-restore fetch "Pixel 9 Pro XL"  # model names work too
+   ```
+
+   The default pulls only `bootloader-*.img` out of the ZIP with HTTP range
+   requests, which is all `boot` needs; `--full` gets you the image for
+   flash-all afterwards. Fetching accepts Google's factory-image terms, the
+   same as clicking Acknowledge on the page. `--url <zip url>` skips the
+   listing page. "bl1 header fail" or a NAK from the ROM almost always means
+   the wrong model's image, or one older than the anti-rollback level the
+   phone already has.
 2. Unplug the phone. Hold **Power + Volume Up + Volume Down**, plug in USB and
    keep holding for about 15 seconds. `pixel-restore detect` should print the
    serial port.
@@ -47,8 +60,9 @@ udev ignore rule for `18d1:4f00`. Build with `--features libudev` if you have
    ```
 
    `--image` takes either the factory ZIP or the `bootloader-*.img` from
-   inside it. `--wait` keeps scanning until the phone appears, so you can start
-   the tool first and then do the button dance.
+   inside it; `--device komodo` fetches the newest bootloader instead.
+   `--wait` keeps scanning until the phone appears, so you can start the
+   tool first and then do the button dance.
 4. When the ROM stops asking for stages the phone is booting ABL. Make it
    permanent from the factory image folder:
 
@@ -113,6 +127,15 @@ tensor-usbdl does and what Pixel 7/8 ROMs accept.
   observations; a Pixel 9 (zumapro) ROM is assumed to behave like Pixel 8.
   Run with `--verbose` on first use. If it asks for a stage the tool does not
   know, the error names it and `--map` lets you serve it without a rebuild.
+* **Retail bootloaders may be refused.** tensor-usbdl's maintainer reports
+  that on Pixel 6 the ROM only accepts a BL1 whose signed header carries a
+  "USB bootable" bit at offset 0x410, which retail factory images lack
+  (`bl1 header fail`), and ships separately sourced recovery packs for
+  Pixel 7/8 for that reason. Google publishes no such images. `boot` prints
+  your BL1's flags word so you can see what the ROM is being offered; the
+  upload is RAM-only, so trying costs nothing.
+* The `fetch` listing parser is tested against a saved copy of the page's
+  markup, not the live page; `--url` is the fallback if Google changes it.
 
 ### Testing without a phone
 

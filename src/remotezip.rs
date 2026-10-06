@@ -62,20 +62,29 @@ pub fn list(src: &mut dyn RangeSource) -> Result<Vec<Member>> {
     if needs_zip64 {
         ensure!(eocd_rel >= 20, "ZIP64 archive without a locator record");
         let loc = &tail[eocd_rel - 20..eocd_rel];
-        ensure!(u32_at(loc, 0) == EOCD64_LOCATOR_SIG, "bad ZIP64 locator signature");
+        ensure!(
+            u32_at(loc, 0) == EOCD64_LOCATOR_SIG,
+            "bad ZIP64 locator signature"
+        );
         let eocd64_off = u64_at(loc, 8);
         let rec = if eocd64_off >= tail_start {
             tail[(eocd64_off - tail_start) as usize..].to_vec()
         } else {
             src.read_range(eocd64_off, eocd64_off + 56)?
         };
-        ensure!(rec.len() >= 56 && u32_at(&rec, 0) == EOCD64_SIG, "bad ZIP64 EOCD signature");
+        ensure!(
+            rec.len() >= 56 && u32_at(&rec, 0) == EOCD64_SIG,
+            "bad ZIP64 EOCD signature"
+        );
         entries = u64_at(&rec, 32);
         cd_size = u64_at(&rec, 40);
         cd_offset = u64_at(&rec, 48);
     }
 
-    ensure!(cd_offset + cd_size <= len, "central directory lies past end of file");
+    ensure!(
+        cd_offset + cd_size <= len,
+        "central directory lies past end of file"
+    );
     let cd = if cd_offset >= tail_start {
         let s = (cd_offset - tail_start) as usize;
         tail[s..s + cd_size as usize].to_vec()
@@ -87,7 +96,10 @@ pub fn list(src: &mut dyn RangeSource) -> Result<Vec<Member>> {
     let mut pos = 0usize;
     for _ in 0..entries {
         ensure!(pos + 46 <= cd.len(), "truncated central directory");
-        ensure!(u32_at(&cd, pos) == CENTRAL_SIG, "bad central directory entry signature");
+        ensure!(
+            u32_at(&cd, pos) == CENTRAL_SIG,
+            "bad central directory entry signature"
+        );
         let method = u16_at(&cd, pos + 10);
         let crc32 = u32_at(&cd, pos + 16);
         let mut compressed = u32_at(&cd, pos + 20) as u64;
@@ -143,7 +155,11 @@ pub fn list(src: &mut dyn RangeSource) -> Result<Vec<Member>> {
 /// Fetch and decompress one member, verifying its CRC32.
 pub fn extract(src: &mut dyn RangeSource, m: &Member) -> Result<Vec<u8>> {
     let lh = src.read_range(m.local_header_offset, m.local_header_offset + 30)?;
-    ensure!(u32_at(&lh, 0) == LOCAL_SIG, "bad local header signature for '{}'", m.name);
+    ensure!(
+        u32_at(&lh, 0) == LOCAL_SIG,
+        "bad local header signature for '{}'",
+        m.name
+    );
     let name_len = u16_at(&lh, 26) as u64;
     let extra_len = u16_at(&lh, 28) as u64;
     let data_start = m.local_header_offset + 30 + name_len + extra_len;
@@ -174,15 +190,20 @@ pub fn extract(src: &mut dyn RangeSource, m: &Member) -> Result<Vec<u8>> {
     Ok(data)
 }
 
-/// An in-memory archive, for tests and for already-downloaded files.
+/// An in-memory archive, for tests.
+#[cfg(test)]
 pub struct Bytes<'a>(pub &'a [u8]);
 
+#[cfg(test)]
 impl RangeSource for Bytes<'_> {
     fn len(&self) -> u64 {
         self.0.len() as u64
     }
     fn read_range(&mut self, start: u64, end: u64) -> Result<Vec<u8>> {
-        ensure!(end <= self.len() && start <= end, "range {start}..{end} out of bounds");
+        ensure!(
+            end <= self.len() && start <= end,
+            "range {start}..{end} out of bounds"
+        );
         Ok(self.0[start as usize..end as usize].to_vec())
     }
 }
@@ -203,7 +224,8 @@ mod tests {
             .large_file(zip64);
         w.start_file("komodo-x/flash-all.sh", deflated).unwrap();
         w.write_all(b"#!/bin/sh\necho hi\n").unwrap();
-        w.start_file("komodo-x/bootloader-komodo-test.img", stored).unwrap();
+        w.start_file("komodo-x/bootloader-komodo-test.img", stored)
+            .unwrap();
         w.write_all(&[7u8; 5000]).unwrap();
         w.start_file("komodo-x/radio.img", deflated).unwrap();
         w.write_all(&vec![1u8; 20_000]).unwrap();
@@ -225,7 +247,10 @@ mod tests {
         assert_eq!(bl.method, 0);
         assert_eq!(bl.uncompressed_size, 5000);
         assert_eq!(extract(&mut src, bl).unwrap(), vec![7u8; 5000]);
-        let radio = members.iter().find(|m| m.name.ends_with("radio.img")).unwrap();
+        let radio = members
+            .iter()
+            .find(|m| m.name.ends_with("radio.img"))
+            .unwrap();
         assert_eq!(radio.method, 8);
         assert_eq!(extract(&mut src, radio).unwrap(), vec![1u8; 20_000]);
     }
@@ -235,7 +260,10 @@ mod tests {
         let z = make_zip(true);
         let mut src = Bytes(&z);
         let members = list(&mut src).unwrap();
-        let bl = members.iter().find(|m| m.name.contains("bootloader")).unwrap();
+        let bl = members
+            .iter()
+            .find(|m| m.name.contains("bootloader"))
+            .unwrap();
         assert_eq!(extract(&mut src, bl).unwrap().len(), 5000);
     }
 

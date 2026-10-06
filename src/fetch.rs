@@ -82,6 +82,24 @@ pub struct Image {
 }
 
 impl Image {
+    /// An image named only by its URL, when the listing page is bypassed.
+    pub fn from_url(device: &str, url: &str) -> Result<Image> {
+        let file = url.rsplit('/').next().unwrap_or(url);
+        ensure!(file.ends_with(".zip"), "{url} does not point at a .zip");
+        let build = file
+            .strip_prefix(&format!("{device}-"))
+            .and_then(|r| r.split("-factory-").next())
+            .unwrap_or("unknown")
+            .to_string();
+        Ok(Image {
+            device: device.to_string(),
+            build,
+            url: url.to_string(),
+            sha256: None,
+            description: format!("direct URL {file}"),
+        })
+    }
+
     pub fn file_name(&self) -> &str {
         self.url.rsplit('/').next().unwrap_or(&self.url)
     }
@@ -118,7 +136,9 @@ pub fn parse_images(html: &str, device: &str) -> Vec<Image> {
     let mut from = 0usize;
     while let Some(rel) = html[from..].find(&needle) {
         let start = from + rel;
-        let Some(end_rel) = html[start..].find('"') else { break };
+        let Some(end_rel) = html[start..].find('"') else {
+            break;
+        };
         let url = &html[start..start + end_rel];
         from = start + end_rel;
         if !url.ends_with(".zip") || !url.contains("-factory-") {
@@ -126,7 +146,9 @@ pub fn parse_images(html: &str, device: &str) -> Vec<Image> {
         }
         let file = url.rsplit('/').next().unwrap_or(url);
         let rest = &file[device.len() + 1..];
-        let Some(build) = rest.split("-factory-").next() else { continue };
+        let Some(build) = rest.split("-factory-").next() else {
+            continue;
+        };
 
         // The SHA-256 is the first 64-hex-digit run after the link.
         let window = &html[from..(from + 4000).min(html.len())];
@@ -164,12 +186,19 @@ pub fn pick_latest<'a>(images: &'a [Image], build: Option<&str>) -> Option<&'a I
     }
     let is_carrier = |i: &Image| {
         let d = i.description.to_ascii_lowercase();
-        ["verizon", "t-mobile", "at&t", "telstra", "softbank", "kddi", "docomo", "emea", "jp", "tw"]
-            .iter()
-            .any(|c| d.contains(&format!("({c}")) || d.contains(&format!(", {c}")))
+        [
+            "verizon", "t-mobile", "at&t", "telstra", "softbank", "kddi", "docomo", "emea", "jp",
+            "tw",
+        ]
+        .iter()
+        .any(|c| d.contains(&format!("({c}")) || d.contains(&format!(", {c}")))
     };
     let generic: Vec<&Image> = images.iter().filter(|i| !is_carrier(i)).collect();
-    let pool = if generic.is_empty() { images.iter().collect() } else { generic };
+    let pool = if generic.is_empty() {
+        images.iter().collect()
+    } else {
+        generic
+    };
     pool.into_iter()
         .enumerate()
         .max_by_key(|(idx, i)| (i.build_key(), *idx))
@@ -191,7 +220,11 @@ pub fn list_images(device: &str) -> Result<Vec<Image>> {
         .get(IMAGES_PAGE)
         .call()
         .context("fetching the factory image listing")?;
-    ensure!(resp.status() == 200, "listing page returned HTTP {}", resp.status());
+    ensure!(
+        resp.status() == 200,
+        "listing page returned HTTP {}",
+        resp.status()
+    );
     let html = resp
         .body_mut()
         .with_config()
@@ -216,8 +249,15 @@ pub struct HttpRange {
 impl HttpRange {
     pub fn open(url: &str) -> Result<HttpRange> {
         let agent = agent();
-        let resp = agent.head(url).call().with_context(|| format!("HEAD {url}"))?;
-        ensure!(resp.status() == 200, "{url} returned HTTP {}", resp.status());
+        let resp = agent
+            .head(url)
+            .call()
+            .with_context(|| format!("HEAD {url}"))?;
+        ensure!(
+            resp.status() == 200,
+            "{url} returned HTTP {}",
+            resp.status()
+        );
         let len: u64 = resp
             .headers()
             .get("content-length")
@@ -295,7 +335,11 @@ pub fn fetch_bootloader(image: &Image, out_dir: &Path) -> Result<PathBuf> {
             anyhow!(
                 "no bootloader-*.img inside {} (members: {})",
                 image.file_name(),
-                members.iter().map(|m| m.name.as_str()).collect::<Vec<_>>().join(", ")
+                members
+                    .iter()
+                    .map(|m| m.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )
         })?;
     let data = remotezip::extract(&mut src, member)?;
@@ -320,7 +364,12 @@ pub fn fetch_full(image: &Image, out_dir: &Path) -> Result<PathBuf> {
     let agent = agent();
 
     let head = agent.head(&image.url).call().context("HEAD on image")?;
-    ensure!(head.status() == 200, "{} returned HTTP {}", image.url, head.status());
+    ensure!(
+        head.status() == 200,
+        "{} returned HTTP {}",
+        image.url,
+        head.status()
+    );
     let total: u64 = head
         .headers()
         .get("content-length")
@@ -333,12 +382,19 @@ pub fn fetch_full(image: &Image, out_dir: &Path) -> Result<PathBuf> {
     if path.is_file() {
         let existing = std::fs::read(&path)?;
         if existing.len() as u64 > total {
-            bail!("{} is larger than the server's copy; delete it and retry", path.display());
+            bail!(
+                "{} is larger than the server's copy; delete it and retry",
+                path.display()
+            );
         }
         hasher.update(&existing);
         have = existing.len() as u64;
         if have > 0 && have < total {
-            eprintln!("resuming {} at {:.1}%", path.display(), have as f64 * 100.0 / total as f64);
+            eprintln!(
+                "resuming {} at {:.1}%",
+                path.display(),
+                have as f64 * 100.0 / total as f64
+            );
         }
     }
 
@@ -354,7 +410,11 @@ pub fn fetch_full(image: &Image, out_dir: &Path) -> Result<PathBuf> {
             hasher = Sha256::new();
             have = 0;
         } else {
-            ensure!(resp.status() == expected, "download returned HTTP {}", resp.status());
+            ensure!(
+                resp.status() == expected,
+                "download returned HTTP {}",
+                resp.status()
+            );
         }
         let mut file = std::fs::OpenOptions::new()
             .create(true)
@@ -394,7 +454,10 @@ pub fn fetch_full(image: &Image, out_dir: &Path) -> Result<PathBuf> {
         eprintln!();
         file.flush()?;
     }
-    ensure!(have == total, "download stopped at {have} of {total} bytes; run again to resume");
+    ensure!(
+        have == total,
+        "download stopped at {have} of {total} bytes; run again to resume"
+    );
 
     let digest = format!("{:x}", hasher.finalize());
     match &image.sha256 {
@@ -436,7 +499,10 @@ mod tests {
         assert_eq!(imgs[0].build, "ap3a.241005.015");
         assert_eq!(imgs[0].sha256.as_deref(), Some("a".repeat(64).as_str()));
         assert_eq!(imgs[0].description, "15.0.0 (AP3A.241005.015, Oct 2024)");
-        assert_eq!(imgs[1].file_name(), "komodo-cp3a.260905.009-factory-99eb621a.zip");
+        assert_eq!(
+            imgs[1].file_name(),
+            "komodo-cp3a.260905.009-factory-99eb621a.zip"
+        );
         assert!(imgs[2].description.contains("Verizon"));
         assert_eq!(parse_images(PAGE, "comet").len(), 1);
         assert!(parse_images(PAGE, "shiba").is_empty());
@@ -459,6 +525,7 @@ mod tests {
         assert_eq!(codename("Pixel 9 Pro XL").unwrap(), "komodo");
         assert_eq!(codename("pixel-9-pro-xl").unwrap(), "komodo");
         assert_eq!(codename("newthing").unwrap(), "newthing");
-        assert!(codename("pixel 9 pro xl!").is_err());
+        assert_eq!(codename("pixel 9 pro xl!").unwrap(), "komodo");
+        assert!(codename("pixel 99 ultra?").is_err());
     }
 }

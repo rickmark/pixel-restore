@@ -1,6 +1,8 @@
 mod dnw;
 mod eub;
 mod fbpk;
+mod fetch;
+mod remotezip;
 mod stages;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -47,6 +49,31 @@ enum Cmd {
     },
     /// Feed bootloader stages to the phone until it reaches fastboot.
     Boot(BootArgs),
+    /// Find the newest factory image for a device on Google's download page
+    /// and fetch it. By default only bootloader-*.img is pulled out of the
+    /// ZIP (a few MB via byte-range requests); --full downloads the whole
+    /// image for flash-all. Downloading means accepting Google's
+    /// factory-image terms, as on the page itself.
+    Fetch {
+        /// Codename or model, e.g. `komodo` or "Pixel 9 Pro XL".
+        device: String,
+        /// Pick a specific build id (e.g. cp3a.260905.009) instead of the newest.
+        #[arg(long, short)]
+        build: Option<String>,
+        /// Download the whole factory ZIP, not just the bootloader.
+        #[arg(long)]
+        full: bool,
+        /// Just list what is available.
+        #[arg(long, short)]
+        list: bool,
+        /// Skip the listing page and fetch from this factory ZIP URL directly
+        /// (a mirror, or a build the page no longer shows).
+        #[arg(long, conflicts_with_all = ["build", "list"])]
+        url: Option<String>,
+        /// Directory to save into.
+        #[arg(long, short, default_value = ".")]
+        out: PathBuf,
+    },
 }
 
 #[derive(Args)]
@@ -56,6 +83,12 @@ struct BootArgs {
     /// last ran.
     #[arg(long, short)]
     image: Option<PathBuf>,
+
+    /// Instead of --image, fetch the newest bootloader for this device
+    /// (codename or model name) from Google and use it. Saved next to the
+    /// tool so the next run can pass it with --image.
+    #[arg(long, conflicts_with = "image")]
+    device: Option<String>,
 
     /// Directory of loose images (bl1.img, pbl.img, abl.img ...) to use
     /// instead of, or on top of, --image.
@@ -115,7 +148,66 @@ fn run() -> Result<()> {
         Cmd::Detect { all, wait } => detect(all, wait),
         Cmd::Unpack { image, out } => unpack(&image, out.as_deref()),
         Cmd::Boot(args) => boot(args),
+        Cmd::Fetch {
+            device,
+            build,
+            full,
+            list,
+            url,
+            out,
+        } => fetch_cmd(&device, build.as_deref(), full, list, url.as_deref(), &out),
     }
+}
+
+fn fetch_cmd(
+    device: &str,
+    build: Option<&str>,
+    full: bool,
+    list: bool,
+    url: Option<&str>,
+    out: &std::path::Path,
+) -> Result<()> {
+    let code = fetch::codename(device)?;
+    if let Some(url) = url {
+        let image = fetch::Image::from_url(&code, url)?;
+        let path = if full {
+            fetch::fetch_full(&image, out)?
+        } else {
+            fetch::fetch_bootloader(&image, out)?
+        };
+        println!("{}", path.display());
+        return Ok(());
+    }
+    let images = fetch::list_images(&code)?;
+    if list {
+        for i in &images {
+            println!(
+                "{:<22} {:<48} {}",
+                i.build,
+                i.description,
+                i.sha256.as_deref().unwrap_or("(no checksum)")
+            );
+        }
+        return Ok(());
+    }
+    let image = fetch::pick_latest(&images, build).ok_or_else(|| {
+        anyhow!(
+            "no build '{}' for {code}; use --list to see them",
+            build.unwrap_or("?")
+        )
+    })?;
+    println!("{code}: {} -> {}", image.description, image.file_name());
+    println!(
+        "(downloading accepts Google's factory-image terms, as on {})",
+        fetch::IMAGES_PAGE
+    );
+    let path = if full {
+        fetch::fetch_full(image, out)?
+    } else {
+        fetch::fetch_bootloader(image, out)?
+    };
+    println!("{}", path.display());
+    Ok(())
 }
 
 fn detect(all: bool, wait: bool) -> Result<()> {
@@ -245,11 +337,24 @@ const LOOSE_IMAGE_NAMES: &[&str] = &[
 ];
 
 fn boot(args: BootArgs) -> Result<()> {
-    if args.image.is_none() && args.dir.is_none() && args.stage.is_empty() {
-        bail!("give me the bootloader with --image <bootloader-*.img or factory.zip>");
+    if args.image.is_none() && args.device.is_none() && args.dir.is_none() && args.stage.is_empty()
+    {
+        bail!("give me the bootloader with --image <bootloader-*.img or factory.zip> or --device <codename>");
     }
 
-    let pack = match &args.image {
+    let image_path = match (&args.image, &args.device) {
+        (Some(p), _) => Some(p.clone()),
+        (None, Some(dev)) => {
+            let code = fetch::codename(dev)?;
+            let images = fetch::list_images(&code)?;
+            let image = fetch::pick_latest(&images, None)
+                .ok_or_else(|| anyhow!("no factory images listed for {code}"))?;
+            println!("{code}: {}", image.description);
+            Some(fetch::fetch_bootloader(image, std::path::Path::new("."))?)
+        }
+        (None, None) => None,
+    };
+    let pack = match &image_path {
         Some(p) => Some(fbpk::load(p)?),
         None => None,
     };

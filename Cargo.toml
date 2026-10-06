@@ -13,7 +13,10 @@ path = "src/main.rs"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 crc32fast = "1"
+flate2 = "1"
 serialport = { version = "4", default-features = false }
+sha2 = "0.10"
+ureq = "3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [features]
