@@ -127,9 +127,15 @@ struct BootArgs {
     #[arg(long)]
     stop: bool,
 
-    /// Abort if the ROM is silent for this many seconds.
-    #[arg(long, default_value_t = 20)]
+    /// Treat this many seconds of silence as the end of a phase.
+    #[arg(long, default_value_t = 10)]
     idle_timeout: u64,
+
+    /// After a phase ends, wait this many seconds for the phone to show up
+    /// again as a ROM device and continue. BL2 re-enumerates USB on Pixel 8
+    /// before asking for GSA1, so the sequence spans two connections.
+    #[arg(long, default_value_t = 15)]
+    reconnect_wait: u64,
 
     /// Print every line the ROM sends.
     #[arg(long, short)]
@@ -316,6 +322,30 @@ fn unpack(image: &std::path::Path, out: Option<&std::path::Path>) -> Result<()> 
     Ok(())
 }
 
+/// After a phase ends, poll for the phone to reappear as a ROM device. With a
+/// fixed --port, reappearing means that path exists again.
+fn wait_for_rom(fixed_port: Option<&str>, wait: Duration) -> Result<Option<String>> {
+    let started = std::time::Instant::now();
+    // Give the old connection a moment to go away before looking for the new one.
+    std::thread::sleep(Duration::from_millis(750));
+    while started.elapsed() < wait {
+        match fixed_port {
+            Some(p) => {
+                if std::path::Path::new(p).exists() {
+                    return Ok(Some(p.to_string()));
+                }
+            }
+            None => {
+                if let Some(d) = eub::find_devices()?.into_iter().next() {
+                    return Ok(Some(d.port));
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    Ok(None)
+}
+
 fn parse_kv(items: &[String], what: &str) -> Result<HashMap<String, String>> {
     items
         .iter()
@@ -432,7 +462,7 @@ fn boot(args: BootArgs) -> Result<()> {
             );
         }
     }
-    let opts = eub::BootOptions {
+    let mut opts = eub::BootOptions {
         checksum: parse_checksum(&args.checksum)?,
         generation: args.epbl.as_deref().map(|e| match e {
             "full" => stages::Generation::Legacy,
@@ -441,10 +471,11 @@ fn boot(args: BootArgs) -> Result<()> {
         send_stop: args.stop,
         verbose: args.verbose,
         idle_timeout: Duration::from_secs(args.idle_timeout),
+        startup_timeout: Duration::from_secs(args.idle_timeout),
     };
 
-    let port_name = match args.port {
-        Some(p) => p,
+    let port_name = match &args.port {
+        Some(p) => p.clone(),
         None => loop {
             let devices = eub::find_devices()?;
             if let Some(d) = devices.first() {
@@ -471,20 +502,53 @@ fn boot(args: BootArgs) -> Result<()> {
         },
     };
 
-    let mut port = eub::open(&port_name)?;
-    let report = eub::boot(port.as_mut(), &sources, &opts)?;
-    drop(port);
+    // The hand-off happens in phases: an early stage (BL2 on Pixel 8) takes
+    // over USB, re-enumerates, and carries on asking for stages on a fresh
+    // connection. Keep serving until the phone stops coming back as a ROM.
+    let mut all_stages: Vec<String> = Vec::new();
+    let mut port_name = port_name;
+    let mut phase = 1;
+    let clean_exit = loop {
+        let mut port = eub::open(&port_name)?;
+        let report = eub::boot(port.as_mut(), &sources, &opts)?;
+        drop(port);
+
+        if report.silent {
+            if phase == 1 {
+                bail!(
+                    "no message from the ROM for {:?}. Is the phone still in ROM-recovery mode?",
+                    opts.startup_timeout
+                );
+            }
+            // The device came back but asked for nothing more: the previous
+            // phase was the last one.
+            println!("no further requests on {port_name}");
+            break true;
+        }
+        all_stages.extend(report.stages_sent);
+        if !report.clean_exit {
+            break false;
+        }
+        match wait_for_rom(
+            args.port.as_deref(),
+            Duration::from_secs(args.reconnect_wait),
+        )? {
+            Some(next) => {
+                phase += 1;
+                println!("phone is back as a ROM device on {next}; continuing (phase {phase})");
+                port_name = next;
+                opts.startup_timeout = Duration::from_secs(args.reconnect_wait);
+            }
+            None => break true,
+        }
+    };
 
     println!();
-    if report.stages_sent.is_empty() {
+    if all_stages.is_empty() {
         bail!("the ROM never asked for a stage");
     }
-    println!(
-        "sent {} stages: {}",
-        report.stages_sent.len(),
-        report.stages_sent.join(" ")
-    );
-    if report.clean_exit {
+    println!("sent {} stages: {}", all_stages.len(), all_stages.join(" "));
+    if clean_exit {
         println!(
             "The phone should now be in fastboot. Check with `fastboot devices`, then make it stick:\n\
              \n  fastboot getvar battery-voltage   # want > 4200 mV before flashing\n  \

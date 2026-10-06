@@ -118,15 +118,25 @@ Pixel 7, `9865` Pixel 8; anything newer is treated like Pixel 8) and
 If no `dpm` partition exists, 4096 zero bytes are sent, which is what
 tensor-usbdl does and what Pixel 7/8 ROMs accept.
 
+The hand-off happens in two phases. Once BL2 is running it takes over USB
+and re-enumerates, so the serial port vanishes and comes back, and the
+second half of the requests (`GSA1` onward) arrives on the new connection.
+`boot` notices the port closing, waits for the phone to reappear as a ROM
+device (`--reconnect-wait`, default 15 s) and carries on, so one run takes
+the phone all the way to fastboot. When the phone does not come back it is
+booting ABL, which is the end of the sequence.
+
 ## Status
 
 * Protocol and container parsing are unit tested, and the full boot loop is
   exercised end to end against `tools/fake_rom.py`, which plays a Pixel 8
   style ROM on a pseudo-terminal and byte-checks every upload.
-* **Not yet verified on real hardware.** The stage table comes from Pixel 7/8
-  observations; a Pixel 9 (zumapro) ROM is assumed to behave like Pixel 8.
-  Run with `--verbose` on first use. If it asks for a stage the tool does not
-  know, the error names it and `--map` lets you serve it without a rebuild.
+* **Verified on a Pixel 8 Pro** (husky), which went from ROM Recovery to
+  fastboot with the tensor-usbdl husky pack and was then reflashed normally.
+  The stage table comes from that run plus Pixel 7/8 observations; a Pixel 9
+  (zumapro) ROM is assumed to behave like Pixel 8. Run with `--verbose` on
+  first use. If it asks for a stage the tool does not know, the error names
+  it and `--map` lets you serve it without a rebuild.
 * **Retail bootloaders are refused.** Confirmed on a Pixel 8 Pro: the ROM
   ACKs the factory image's BL1 and then answers `bl1 header fail`, for both
   the current stable and the newest beta. The ROM only accepts a BL1 whose
@@ -156,6 +166,11 @@ tensor-usbdl does and what Pixel 7/8 ROMs accept.
 python3 tools/fake_rom.py --image bootloader.img     # prints /dev/pts/N (Linux) or /dev/ttysNNN (macOS)
 pixel-restore boot --image bootloader.img --port /dev/pts/N --verbose
 ```
+
+`fake_rom.py --pause-after BL2B --pause 3` goes quiet for a few seconds after
+that stage, the way the real phone does while BL2 re-enumerates, to exercise
+the reconnect path (`boot --idle-timeout 1 --reconnect-wait 5` keeps the
+test quick).
 
 ## Credits
 
