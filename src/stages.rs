@@ -68,7 +68,7 @@ pub fn resolve(stage: &str, generation: Generation) -> Option<(&'static str, Par
         "EPBB" => ("pbl", Body),
         "BL2" => ("bl2", Header),
         "BL2B" => ("bl2", Body),
-        "GSA1" => ("gsa", Full),
+        "GSA1" => ("gsa_bl1", Full),
         "GSAF" => ("gsa", Full),
         "ABL" => ("abl", Header),
         "ABLB" => ("abl", Body),
@@ -85,13 +85,38 @@ pub fn resolve(stage: &str, generation: Generation) -> Option<(&'static str, Par
 }
 
 /// Alternative partition names to try when the first choice is absent from
-/// the pack. `gsa_bl1` is what some factory images call the GSA first stage.
+/// the pack. Factory images carry the GSA (security chip) first stage as
+/// `gsa_bl1` and its firmware as `gsa`; tensor-usbdl's loose packs call the
+/// same two files `gsa.img` and `gsaf.img`.
 fn aliases(partition: &str) -> &'static [&'static str] {
     match partition {
-        "gsa" => &["gsa", "gsa_bl1", "gsa1"],
+        "gsa_bl1" => &["gsa_bl1", "gsa1", "gsa"],
+        "gsa" => &["gsa", "gsaf"],
         "pbl" => &["pbl", "epbl"],
         _ => &[],
     }
+}
+
+/// The few header fields tensor-usbdl documented in a stage image: a magic
+/// word at 0x400, the body length at 0x40C and a flags word at 0x410 whose
+/// low byte is the "USB bootable" bit the Pixel 6 ROM insists on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeaderInfo {
+    pub magic: u32,
+    pub body_len: u32,
+    pub flags: u32,
+}
+
+pub fn header_info(image: &[u8]) -> Option<HeaderInfo> {
+    if image.len() < HEADER_LEN {
+        return None;
+    }
+    let u32_at = |o: usize| u32::from_le_bytes(image[o..o + 4].try_into().unwrap());
+    Some(HeaderInfo {
+        magic: u32_at(0x400),
+        body_len: u32_at(0x40c),
+        flags: u32_at(0x410),
+    })
 }
 
 /// Where stage bytes come from: the FBPK pack, loose files, or synthesized.
@@ -104,6 +129,11 @@ pub struct Sources {
 }
 
 impl Sources {
+    /// Raw bytes of a partition, if any source has it.
+    pub fn partition(&self, partition: &str) -> Option<&[u8]> {
+        self.partition_bytes(partition)
+    }
+
     fn partition_bytes(&self, partition: &str) -> Option<&[u8]> {
         if let Some(bytes) = self.files.get(partition) {
             return Some(bytes);
@@ -186,6 +216,7 @@ mod tests {
             ("bl1_a", ENTRY_PARTITION_DATA, true, &[1u8; HEADER_LEN + 8]),
             ("abl_a", ENTRY_PARTITION_DATA, true, &abl),
             ("gsa_bl1", ENTRY_PARTITION_DATA, false, &[7u8; 10]),
+            ("gsa", ENTRY_PARTITION_DATA, false, &[8u8; 12]),
             ("pbl", ENTRY_PARTITION_DATA, false, &[9u8; HEADER_LEN + 3]),
         ]);
         Sources {
@@ -228,6 +259,10 @@ mod tests {
             s.payload_for("GSA1", Generation::Split).unwrap().0,
             vec![7u8; 10]
         );
+        assert_eq!(
+            s.payload_for("GSAF", Generation::Split).unwrap().0,
+            vec![8u8; 12]
+        );
         let (dpm, desc) = s.payload_for("DPM", Generation::Split).unwrap();
         assert_eq!(dpm, vec![0u8; HEADER_LEN]);
         assert!(desc.contains("zeroed"));
@@ -243,7 +278,7 @@ mod tests {
     #[test]
     fn remap_and_loose_files_win() {
         let mut s = sources();
-        s.remap.insert("WHAT".into(), "gsa".into());
+        s.remap.insert("WHAT".into(), "gsa_bl1".into());
         assert_eq!(
             s.payload_for("WHAT", Generation::Split).unwrap().0,
             vec![7u8; 10]

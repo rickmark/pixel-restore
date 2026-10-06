@@ -241,7 +241,7 @@ fn parse_checksum(s: &str) -> Result<dnw::Checksum> {
 }
 
 const LOOSE_IMAGE_NAMES: &[&str] = &[
-    "bl1", "pbl", "bl2", "abl", "bl31", "tzsw", "ldfw", "gsa", "gsaf", "gcf", "dpm",
+    "bl1", "pbl", "bl2", "abl", "bl31", "tzsw", "ldfw", "gsa_bl1", "gsa", "gsaf", "gcf", "dpm",
 ];
 
 fn boot(args: BootArgs) -> Result<()> {
@@ -305,6 +305,19 @@ fn boot(args: BootArgs) -> Result<()> {
         .collect();
 
     let sources = stages::Sources { pack, files, remap };
+    if let Some(info) = sources.partition("bl1").and_then(stages::header_info) {
+        println!(
+            "bl1 header: magic {:#010x}, body {} bytes, flags {:#010x}",
+            info.magic, info.body_len, info.flags
+        );
+        if info.flags & 0xff != 0x01 {
+            println!(
+                "  note: the low byte of the flags word is not 0x01. On Pixel 6 the ROM only \
+                 accepts a BL1 signed with that \"USB bootable\" bit set, and retail factory \
+                 images are not; if the ROM answers \"bl1 header fail\", that is why."
+            );
+        }
+    }
     let opts = eub::BootOptions {
         checksum: parse_checksum(&args.checksum)?,
         generation: args.epbl.as_deref().map(|e| match e {
