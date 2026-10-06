@@ -83,7 +83,7 @@ pixel-restore detect --all                  # list every serial port if the phon
 pixel-restore unpack bootloader-*.img       # show the partitions, verify CRCs
 pixel-restore unpack factory.zip -o out/    # extract them as out/<name>.img
 pixel-restore boot --image X --verbose      # print every line the ROM sends
-pixel-restore boot --dir out/               # serve loose images, tensor-usbdl style
+pixel-restore boot --dir tensor-usbdl-v0.2.0/sources/zuma/husky   # serve a recovery pack
 pixel-restore boot --image X --stage dpm=my-dpm.img   # override one partition
 pixel-restore boot --image X --map NEWSTAGE=gsa       # teach it an unfamiliar request
 ```
@@ -127,13 +127,26 @@ tensor-usbdl does and what Pixel 7/8 ROMs accept.
   observations; a Pixel 9 (zumapro) ROM is assumed to behave like Pixel 8.
   Run with `--verbose` on first use. If it asks for a stage the tool does not
   know, the error names it and `--map` lets you serve it without a rebuild.
-* **Retail bootloaders may be refused.** tensor-usbdl's maintainer reports
-  that on Pixel 6 the ROM only accepts a BL1 whose signed header carries a
-  "USB bootable" bit at offset 0x410, which retail factory images lack
-  (`bl1 header fail`), and ships separately sourced recovery packs for
-  Pixel 7/8 for that reason. Google publishes no such images. `boot` prints
-  your BL1's flags word so you can see what the ROM is being offered; the
-  upload is RAM-only, so trying costs nothing.
+* **Retail bootloaders are refused.** Confirmed on a Pixel 8 Pro: the ROM
+  ACKs the factory image's BL1 and then answers `bl1 header fail`, for both
+  the current stable and the newest beta. The ROM only accepts a BL1 whose
+  signed header has the "USB bootable" bit (bit 0 of the flags word at
+  0x410) set, and retail images are signed without it. Google publishes no
+  such images; the community's tensor-usbdl release carries recovery packs
+  (`sources/gs201`, `sources/zuma/shiba`, `sources/zuma/husky`) whose images
+  all have flags `0x211`. Serve one with `boot --dir <pack dir>`. Their BL1s
+  date from 2023, so a phone that took Google's May 2025 anti-rollback bump
+  for Pixel 6/8 may refuse them too; there is no public answer for that case.
+  `unpack` prints each image's header tag and flags word, and `boot` warns
+  when the BL1 it is about to send has the bit clear. Uploads are RAM-only,
+  so trying costs nothing.
+* Images are matched to ROM requests by the ASCII tag in their header magic
+  (`EPBL`, `BL2`, `GSA1`, `GSAF`, `ABL`, `TZSW`, `LDFW`, `BL31`, `GCF`;
+  BL1 carries `APBL`), falling back to partition/file names. That is what
+  sorts out factory images (`gsa_bl1` + `gsa`) and tensor-usbdl packs
+  (`gsa.img` + `gsaf.img`, which are the other way round from their names).
+* The ROM sends its clear-to-send `C` with no line terminator and gives up
+  about a second later, so the reader hands a bare `C` through immediately.
 * The `fetch` listing parser is tested against a saved copy of the page's
   markup, not the live page; `--url` is the fallback if Google changes it.
 
