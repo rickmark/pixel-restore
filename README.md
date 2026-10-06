@@ -118,15 +118,25 @@ Pixel 7, `9865` Pixel 8; anything newer is treated like Pixel 8) and
 If no `dpm` partition exists, 4096 zero bytes are sent, which is what
 tensor-usbdl does and what Pixel 7/8 ROMs accept.
 
+The hand-off happens in two phases. Once BL2 is running it takes over USB
+and re-enumerates, so the serial port vanishes and comes back, and the
+second half of the requests (`GSA1` onward) arrives on the new connection.
+`boot` notices the port closing, waits for the phone to reappear as a ROM
+device (`--reconnect-wait`, default 15 s) and carries on, so one run takes
+the phone all the way to fastboot. When the phone does not come back it is
+booting ABL, which is the end of the sequence.
+
 ## Status
 
 * Protocol and container parsing are unit tested, and the full boot loop is
   exercised end to end against `tools/fake_rom.py`, which plays a Pixel 8
   style ROM on a pseudo-terminal and byte-checks every upload.
-* **Not yet verified on real hardware.** The stage table comes from Pixel 7/8
-  observations; a Pixel 9 (zumapro) ROM is assumed to behave like Pixel 8.
-  Run with `--verbose` on first use. If it asks for a stage the tool does not
-  know, the error names it and `--map` lets you serve it without a rebuild.
+* **Verified on a Pixel 8 Pro** (husky), which went from ROM Recovery to
+  fastboot with the tensor-usbdl husky pack and was then reflashed normally.
+  The stage table comes from that run plus Pixel 7/8 observations; a Pixel 9
+  (zumapro) ROM is assumed to behave like Pixel 8. Run with `--verbose` on
+  first use. If it asks for a stage the tool does not know, the error names
+  it and `--map` lets you serve it without a rebuild.
 * **Retail bootloaders are refused.** Confirmed on a Pixel 8 Pro: the ROM
   ACKs the factory image's BL1 and then answers `bl1 header fail`, for both
   the current stable and the newest beta. The ROM only accepts a BL1 whose
@@ -156,6 +166,48 @@ tensor-usbdl does and what Pixel 7/8 ROMs accept.
 python3 tools/fake_rom.py --image bootloader.img     # prints /dev/pts/N (Linux) or /dev/ttysNNN (macOS)
 pixel-restore boot --image bootloader.img --port /dev/pts/N --verbose
 ```
+
+`fake_rom.py --pause-after BL2B --pause 3` goes quiet for a few seconds after
+that stage, the way the real phone does while BL2 re-enumerates, to exercise
+the reconnect path (`boot --idle-timeout 1 --reconnect-wait 5` keeps the
+test quick).
+
+### Brick-and-recover test on a real phone
+
+`tools/brick_test.sh` proves the whole loop on hardware: it flashes a
+`bootloader.img` with one deliberately corrupted partition into the current
+slot, reboots, waits for the phone to drop into USB boot mode, recovers it
+with a pack, then reflashes the good image and checks fastboot comes back on
+its own. `tools/tamper_fbpk.py` makes the corrupted image (body bytes
+flipped, signed header untouched, entry CRC fixed so the flasher takes it).
+
+```sh
+cargo build --release
+tools/brick_test.sh ~/Downloads/husky-xxx-factory-xxx \
+                    ~/Downloads/tensor-usbdl-v0.2.0/sources/zuma/husky abl
+```
+
+Nothing is flashed until you type `brick`. Read this before choosing the
+partition:
+
+* **`abl` (default) is the low-risk experiment.** BL1, PBL and BL2 stay
+  intact. Expect one of two outcomes, both informative: the phone comes back
+  to fastboot by itself (the ROM or BL2 fell back to the other slot, so a
+  single bad slot is not a brick), or BL2 enters USB boot mode and asks for
+  `GSA1` onward, which exercises the tool's second phase. Even in the worst
+  case the ROM and BL1 still work, so the pack's BL1 is never needed.
+* **`bl1` reproduces ROM Recovery itself**, the state this tool exists for,
+  but it is the one-way door. The ROM only accepts a BL1 with the USB-boot
+  bit, the only such BL1s are the community pack's 2023 ones, and a ROM that
+  has taken an anti-rollback bump refuses them. The husky pack was accepted
+  by this phone before it was reflashed with the current factory image; it is
+  not known whether that image bumped the BL1 level. If it did, a corrupted
+  BL1 cannot be recovered by anyone. Only do this on a phone you can afford
+  to lose, or after confirming the pack still boots the phone from a state
+  that does not depend on it.
+* Flashing writes the current slot only. A phone that falls back to the other
+  slot has not been bricked; corrupting both slots is what makes a brick
+  certain, and the script deliberately does not do that for you.
 
 ## Credits
 

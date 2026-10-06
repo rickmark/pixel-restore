@@ -111,6 +111,8 @@ def main():
     ap.add_argument("--serial", default="09875001deadbeef0123")
     ap.add_argument("--fail-at", help="pretend this stage's header fails")
     ap.add_argument("--only", type=int, help="stop after N stages")
+    ap.add_argument("--pause-after", help="go silent after ACKing this stage, like BL2 re-enumerating")
+    ap.add_argument("--pause", type=float, default=3.0, help="seconds of silence for --pause-after")
     args = ap.parse_args()
 
     parts = parse_fbpk(open(args.image, "rb").read())
@@ -159,6 +161,10 @@ def main():
             time.sleep(0.5)
             sys.exit(5)
         say(f"eub:ack:{args.serial}:{stage}")
+        if args.pause_after == stage:
+            print(f"[rom] silent for {args.pause}s after {stage} (re-enumeration)", file=sys.stderr)
+            time.sleep(args.pause)
+            wait_for_host(master)  # the host reconnects and pokes us again
     print(f"[rom] handing off to ABL after {sent} stages", file=sys.stderr)
     time.sleep(0.3)
     os.close(master)

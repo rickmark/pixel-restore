@@ -74,6 +74,10 @@ pub struct BootOptions {
     pub verbose: bool,
     /// Give up if the ROM says nothing for this long.
     pub idle_timeout: Duration,
+    /// How long to wait for the ROM's first byte on this connection. After a
+    /// USB re-enumeration the new stage can take a few seconds to start
+    /// talking, longer than the idle gap between requests.
+    pub startup_timeout: Duration,
 }
 
 /// Outcome of a boot session.
@@ -85,6 +89,8 @@ pub struct BootReport {
     /// error. That is what success looks like: the phone is no longer a ROM
     /// device, it is booting ABL and will enumerate as fastboot.
     pub clean_exit: bool,
+    /// Not a single byte arrived on this connection.
+    pub silent: bool,
 }
 
 /// Drive the boot ROM: answer every `eub:req` with the right slice of the
@@ -100,6 +106,7 @@ pub fn boot(
         serial: None,
         stages_sent: Vec::new(),
         clean_exit: false,
+        silent: true,
     };
     let mut pending: Option<String> = None;
     let mut last_activity = Instant::now();
@@ -120,6 +127,7 @@ pub fn boot(
             Ok(n) => {
                 lines.push(&buf[..n]);
                 last_activity = Instant::now();
+                report.silent = false;
             }
             Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {}
             Err(e) if is_disconnect(&e) => {
@@ -132,7 +140,16 @@ pub fn boot(
             Err(e) => return Err(e).context("reading from ROM"),
         }
 
-        if last_activity.elapsed() > opts.idle_timeout {
+        let allowed = if report.silent {
+            opts.startup_timeout
+        } else {
+            opts.idle_timeout
+        };
+        if last_activity.elapsed() > allowed {
+            if report.silent {
+                // Nothing ever came; let the caller decide what that means.
+                return Ok(report);
+            }
             if !report.stages_sent.is_empty() && pending.is_none() {
                 report.clean_exit = true;
                 println!(
