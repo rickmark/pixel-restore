@@ -172,6 +172,43 @@ that stage, the way the real phone does while BL2 re-enumerates, to exercise
 the reconnect path (`boot --idle-timeout 1 --reconnect-wait 5` keeps the
 test quick).
 
+### Brick-and-recover test on a real phone
+
+`tools/brick_test.sh` proves the whole loop on hardware: it flashes a
+`bootloader.img` with one deliberately corrupted partition into the current
+slot, reboots, waits for the phone to drop into USB boot mode, recovers it
+with a pack, then reflashes the good image and checks fastboot comes back on
+its own. `tools/tamper_fbpk.py` makes the corrupted image (body bytes
+flipped, signed header untouched, entry CRC fixed so the flasher takes it).
+
+```sh
+cargo build --release
+tools/brick_test.sh ~/Downloads/husky-xxx-factory-xxx \
+                    ~/Downloads/tensor-usbdl-v0.2.0/sources/zuma/husky abl
+```
+
+Nothing is flashed until you type `brick`. Read this before choosing the
+partition:
+
+* **`abl` (default) is the low-risk experiment.** BL1, PBL and BL2 stay
+  intact. Expect one of two outcomes, both informative: the phone comes back
+  to fastboot by itself (the ROM or BL2 fell back to the other slot, so a
+  single bad slot is not a brick), or BL2 enters USB boot mode and asks for
+  `GSA1` onward, which exercises the tool's second phase. Even in the worst
+  case the ROM and BL1 still work, so the pack's BL1 is never needed.
+* **`bl1` reproduces ROM Recovery itself**, the state this tool exists for,
+  but it is the one-way door. The ROM only accepts a BL1 with the USB-boot
+  bit, the only such BL1s are the community pack's 2023 ones, and a ROM that
+  has taken an anti-rollback bump refuses them. The husky pack was accepted
+  by this phone before it was reflashed with the current factory image; it is
+  not known whether that image bumped the BL1 level. If it did, a corrupted
+  BL1 cannot be recovered by anyone. Only do this on a phone you can afford
+  to lose, or after confirming the pack still boots the phone from a state
+  that does not depend on it.
+* Flashing writes the current slot only. A phone that falls back to the other
+  slot has not been bricked; corrupting both slots is what makes a brick
+  certain, and the script deliberately does not do that for you.
+
 ## Credits
 
 Protocol details come from JoshuaDoes' tensor-usbdl (AGPL-3.0; this is an
