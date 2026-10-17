@@ -29,23 +29,36 @@ file.
 
 ## Build
 
-```sh
-# one-time: sync a komodo-capable tree per GrapheneOS/AOSP docs, into $SRC
-SRC=/path/to/tree LUNCH_TARGET=komodo-userdebug ./docker/build.sh
-```
-
-`build.sh` builds the image, applies the patches in the container, then runs
-`m fastbootd recovery bootimage vendorbootimage`. Outputs land in
-`$OUT` (`.../out/target/product/komodo`): `boot.img`, `vendor_boot.img`.
-
-Verify the patch is actually in the binary (no phone involved):
+One command runs the whole pipeline in the container — `repo init`, `repo
+sync`, a work branch on the patched projects, the patches, the build, and the
+verify step:
 
 ```sh
-OUT=/path/to/tree/out/target/product/komodo ./scripts/make-boot-image.sh
+./docker/build.sh
 ```
 
-It greps the built `fastbootd`/recovery ramdisk for the patched string and
-fails loudly if the rebuild did not take.
+Defaults: GrapheneOS `platform_manifest`, `MANIFEST_BRANCH=17`,
+`LUNCH_TARGET=komodo-userdebug`, the tree in `./.aosp-tree` (reused across
+runs, so the long `repo sync` happens once). Override any of them:
+
+```sh
+TREE=/big/disk/komodo-tree \
+MANIFEST_BRANCH=17 \
+LUNCH_TARGET=komodo-userdebug \
+./docker/build.sh
+```
+
+Set `MANIFEST_BRANCH` to the current komodo branch from grapheneos.org/build
+or the manifest repo if `17` is no longer current. Pass `SKIP_SYNC=1` to reuse
+an already-synced tree without fetching. On a native x86_64 Linux host you can
+skip Docker and run `scripts/sync-and-build.sh` directly with the same
+variables.
+
+The pipeline builds `m fastbootd recovery bootimage vendorbootimage`, then runs
+`scripts/make-boot-image.sh`, which greps the built `fastbootd`/recovery
+ramdisk for the patched string and fails loudly if the rebuild did not take.
+Outputs land in `out/target/product/komodo` inside the tree: `boot.img`,
+`vendor_boot.img`.
 
 ## Boot it TEMPORARILY (no flash)
 

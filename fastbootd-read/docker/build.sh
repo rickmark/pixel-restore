@@ -1,51 +1,55 @@
 #!/usr/bin/env bash
-# Build a read-enabled fastbootd + recovery for komodo inside the Docker image.
+# One command, from a Mac, to produce a read-enabled fastbootd/recovery for
+# komodo. It builds the Linux container, then runs the full pipeline inside it:
+#   repo init -> repo sync -> branch -> apply patches -> build -> verify
 #
-# Run from the HOST (macOS). It builds the image, then runs the build inside the
-# container against an AOSP/GrapheneOS tree you have already `repo sync`-ed.
+#   ./docker/build.sh
 #
-#   SRC=/path/to/aosp-or-grapheneos-tree ./docker/build.sh
+# macOS cannot build AOSP directly, so everything runs in the container. The
+# platform tree is kept in a host directory (TREE) and reused across runs, so
+# the huge `repo sync` only happens once.
 #
-# Variables:
-#   SRC           Host path of the synced platform tree (required).
-#   LUNCH_TARGET  lunch combo (default: komodo-userdebug). For GrapheneOS use the
-#                 channel target its build docs name, e.g. komodo-cur-userdebug.
-#                 userdebug matters: it defines FB_ENABLE_FETCH (so `fetch` is
-#                 compiled in) and keeps the recovery/fastbootd domains able to
-#                 share the tmpfs policy file.
-#   CCACHE_DIR    Host ccache dir (default: $SRC/.ccache).
-#   PLATFORM      Container platform (default: linux/amd64 for the x86_64
-#                 AOSP host toolchain; override only on a native x86_64 host).
+# Variables (all optional):
+#   TREE            Host dir for the platform tree (default: ./.aosp-tree next to
+#                   this repo). Hundreds of GB once synced; put it on a fast,
+#                   roomy disk. Reused across runs.
+#   MANIFEST_URL    repo manifest (default: GrapheneOS platform_manifest).
+#   MANIFEST_BRANCH Manifest branch/tag (default: 17). Set to the current komodo
+#                   branch from grapheneos.org/build or the manifest repo.
+#   LUNCH_TARGET    lunch combo (default: komodo-userdebug).
+#   JOBS            parallelism (default: container nproc).
+#   SKIP_SYNC       1 to skip repo init/sync (tree already current).
+#   CCACHE_DIR      Host ccache dir (default: $TREE/.ccache).
+#   PLATFORM        Container platform (default: linux/amd64 for the x86_64 AOSP
+#                   host toolchain; override only on a native x86_64 host).
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-: "${SRC:?Set SRC to your synced AOSP/GrapheneOS tree}"
-LUNCH_TARGET="${LUNCH_TARGET:-komodo-userdebug}"
-CCACHE_DIR="${CCACHE_DIR:-$SRC/.ccache}"
+TREE="${TREE:-$repo_root/.aosp-tree}"
+CCACHE_DIR="${CCACHE_DIR:-$TREE/.ccache}"
 PLATFORM="${PLATFORM:-linux/amd64}"
-mkdir -p "$CCACHE_DIR"
+mkdir -p "$TREE" "$CCACHE_DIR"
 
 echo ">> Building Docker image (fastbootd-read-builder)"
 docker build --platform "$PLATFORM" -t fastbootd-read-builder "$here"
 
-echo ">> Building $LUNCH_TARGET in container (SRC=$SRC)"
+echo ">> Running the full build pipeline in the container"
+echo "   tree:   $TREE"
+echo "   target: ${LUNCH_TARGET:-komodo-userdebug}"
 docker run --rm -it --platform "$PLATFORM" \
-  -v "$SRC":/aosp \
+  -v "$TREE":/aosp \
   -v "$repo_root":/patches:ro \
   -v "$CCACHE_DIR":/ccache \
-  -e CCACHE_DIR=/ccache \
-  -e LUNCH_TARGET="$LUNCH_TARGET" \
+  -e CCACHE_DIR=/ccache -e USE_CCACHE=1 \
+  -e AOSP_DIR=/aosp \
+  -e REPO_ROOT=/patches \
+  -e MANIFEST_URL="${MANIFEST_URL:-}" \
+  -e MANIFEST_BRANCH="${MANIFEST_BRANCH:-}" \
+  -e LUNCH_TARGET="${LUNCH_TARGET:-}" \
+  -e JOBS="${JOBS:-}" \
+  -e SKIP_SYNC="${SKIP_SYNC:-0}" \
   fastbootd-read-builder \
-  bash -lc '
-    set -euo pipefail
-    cd /aosp
-    /patches/scripts/apply-patches.sh /aosp /patches
-    ccache -M 50G >/dev/null || true
-    source build/envsetup.sh
-    lunch "$LUNCH_TARGET"
-    # Rebuild the daemon, the recovery binary, and the ramdisk-carrying images.
-    m fastbootd recovery bootimage vendorbootimage
-    echo ">> Build done. Artifacts under: $OUT"
-    ls -la "$OUT"/boot.img "$OUT"/vendor_boot.img 2>/dev/null || true
-  '
+  bash -lc 'ccache -M 50G >/dev/null 2>&1 || true; exec /patches/scripts/sync-and-build.sh'
+
+echo ">> Done. Image artifacts are under $TREE/out/target/product/komodo"

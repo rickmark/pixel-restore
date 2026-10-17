@@ -39,15 +39,26 @@ fastbootd-read/
 
 ## Quick start
 
+One command on a Mac does the whole build (it runs in a Linux container
+because macOS can't build AOSP): `repo init` -> `repo sync` -> branch ->
+apply patches -> build -> verify.
+
 ```sh
-# 1. Sync a komodo-capable tree (GrapheneOS recommended) into $SRC, then:
-SRC=/path/to/tree LUNCH_TARGET=komodo-userdebug ./docker/build.sh
-# 2. Verify the patch landed in the binary:
-OUT=$SRC/out/target/product/komodo ./scripts/make-boot-image.sh
-# 3. Boot it temporarily on the unlocked phone (see docs/build-and-boot.md),
-#    pick "Enable reading" on the phone screen, then:
+# Full pipeline. First run syncs the tree (hundreds of GB, slow); later runs reuse it.
+./docker/build.sh
+# Target a specific GrapheneOS branch / lunch combo if the defaults don't fit:
+MANIFEST_BRANCH=17 LUNCH_TARGET=komodo-userdebug ./docker/build.sh
+```
+
+Then boot it temporarily on the unlocked phone (see `docs/build-and-boot.md`),
+pick **Enable reading** on the phone screen, and read partitions:
+
+```sh
 ./scripts/read-partitions.sh --serial <serial> ~/pixel-partitions
 ```
+
+`scripts/sync-and-build.sh` is the pipeline itself if you want to run it on a
+Linux host directly; `docker/build.sh` just wraps it in the container.
 
 ## Status
 
